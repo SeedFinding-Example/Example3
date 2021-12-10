@@ -1,0 +1,34 @@
+plugins {
+    id 'java'
+}
+
+group 'org.example'
+version '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+    maven {
+        url "https://maven.seedfinding.com"
+    }
+    maven {
+        url "https://maven-snapshots.seedfinding.com"
+    }
+}
+
+dependencies {
+    implementation("com.seedfinding:mc_math:LATEST")
+    implementation("com.seedfinding:mc_seed:LATEST")
+    implementation("com.seedfinding:mc_core:LATEST")
+    implementation("com.seedfinding:mc_terrain:LATEST")
+    implementation("com.seedfinding:mc_biome:LATEST")
+    implementation("com.seedfinding:mc_feature:LATEST")
+    implementation("com.seedfinding:mc_reversal:LATEST")
+    implementation('one.util:streamex:0.7.3')
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.0'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.7.0'
+}
+
+test {
+    useJUnitPlatform()
+}
