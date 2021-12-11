@@ -61,19 +61,22 @@ public class FindLoot {
 				new RPos(center.toRegionPos(regionSize).getX(), center.toRegionPos(regionSize).getZ(), regionSize),
 				new RPos(radius / regionSize, radius / regionSize, regionSize), 1, (x, y, z) -> new RPos(x, z, regionSize)
 		);
+		ChunkRand chunkRand=new ChunkRand();
 		// this will be by thread and thus be "thread safe"
-		ThreadLocal<ChunkRand> chunkRand = ThreadLocal.withInitial(ChunkRand::new);
 		return StreamSupport.stream(spiralIterator.spliterator(), false)
-				.map(rPos -> structure.getInRegion(terrainGenerator.getWorldSeed(), rPos.getX(), rPos.getZ(), chunkRand.get()))
+				.map(rPos -> structure.getInRegion(terrainGenerator.getWorldSeed(), rPos.getX(), rPos.getZ(), chunkRand))
 				.filter(Objects::nonNull)
 				.filter(cPos -> structure.canSpawn(cPos, terrainGenerator.getBiomeSource()) && structure.canGenerate(cPos, terrainGenerator))
-				.filter(cPos -> structureGenerator.generate(terrainGenerator, cPos, chunkRand.get()))
 				.map(cPos -> {
-					// get the count for this position of all the matching item predicate in all the chests
-					int count = ((ILoot) structure).getLoot(terrainGenerator.getWorldSeed(), structureGenerator, chunkRand.get(), false)
-							.stream().mapToInt(chestContent -> chestContent.getCount(itemPredicate)).sum();
-					return new Pair<>(cPos, count);
-				});
+					if (structureGenerator.generate(terrainGenerator, cPos, chunkRand)){
+						// get the count for this position of all the matching item predicate in all the chests
+						int count = ((ILoot) structure).getLoot(terrainGenerator.getWorldSeed(), structureGenerator, chunkRand, false)
+								.stream().mapToInt(chestContent -> chestContent.getCount(itemPredicate)).sum();
+						return new Pair<>(cPos, count);
+					}
+					return null;
+
+				}).filter(Objects::nonNull);
 
 	}
 
@@ -89,7 +92,7 @@ public class FindLoot {
 		int threads = parallelism == null || parallelism < 1 ? 1 : Math.min(parallelism, Runtime.getRuntime().availableProcessors());
 		ForkJoinPool forkJoinPool = new ForkJoinPool(threads);
 		return StreamEx.of(stream)
-				.parallel(forkJoinPool)
+
 				.limit(limit)
 				.map(Pair::getFirst)
 				.map(CPos::toBlockPos)
@@ -108,7 +111,7 @@ public class FindLoot {
 		int threads = parallelism == null || parallelism < 1 ? 1 : Math.min(parallelism, Runtime.getRuntime().availableProcessors());
 		ForkJoinPool forkJoinPool = new ForkJoinPool(threads);
 		AtomicInteger value = new AtomicInteger(0);
-		return StreamEx.of(stream).parallel(forkJoinPool)
+		return StreamEx.of(stream)
 				.takeWhile(cPosIntegerPair -> value.addAndGet(cPosIntegerPair.getSecond()) < limit)
 				.map(Pair::getFirst)
 				.map(CPos::toBlockPos)
@@ -131,10 +134,11 @@ public class FindLoot {
 		}};
 		// Notch + normal gold apple
 		final Predicate<Item> itemPredicate = item -> item.equalsName(Items.ENCHANTED_GOLDEN_APPLE) || item.equalsName(Items.GOLDEN_APPLE);
-		final int numberOfItemToFind = 10;
-		final int numberOfStructureToFind = 10;
-		final int parallelism = 8;
+		final int numberOfItemToFind = 5;
+		final int numberOfStructureToFind = 3;
+		final int parallelism = 1;
 		for (RegionStructure<?, ?> structure : structureToInclude) {
+			System.out.println(structure.getName());
 			Stream<Pair<CPos, Integer>> stream1 = streamLoot(originSearch, radiusSearch, terrainGenerator, structure, itemPredicate);
 			// Find X structure Pos such as in those all X if we sum the items we get numberOfItemToFind
 			List<BPos> NItemsPos = getNItemsPos(stream1, numberOfItemToFind, parallelism);
