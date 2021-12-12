@@ -61,17 +61,25 @@ public class FindLoot {
 				new RPos(center.toRegionPos(regionSize).getX(), center.toRegionPos(regionSize).getZ(), regionSize),
 				new RPos(radius / regionSize, radius / regionSize, regionSize), 1, (x, y, z) -> new RPos(x, z, regionSize)
 		);
-		ChunkRand chunkRand=new ChunkRand();
+		ThreadLocal<ChunkRand> chunkRand = ThreadLocal.withInitial(ChunkRand::new);
+		ThreadLocal<RegionStructure<?,?>> localStructure = ThreadLocal.withInitial(()->structure);
+		ThreadLocal<TerrainGenerator> localTerrain = ThreadLocal.withInitial(()->terrainGenerator);
 		// this will be by thread and thus be "thread safe"
 		return StreamSupport.stream(spiralIterator.spliterator(), false)
-				.map(rPos -> structure.getInRegion(terrainGenerator.getWorldSeed(), rPos.getX(), rPos.getZ(), chunkRand))
+				.map(rPos -> localStructure.get().getInRegion(localTerrain.get().getWorldSeed(), rPos.getX(), rPos.getZ(), chunkRand.get()))
 				.filter(Objects::nonNull)
-				.filter(cPos -> structure.canSpawn(cPos, terrainGenerator.getBiomeSource()) && structure.canGenerate(cPos, terrainGenerator))
+				.filter(cPos -> localStructure.get().canSpawn(cPos, localTerrain.get().getBiomeSource()) && localStructure.get().canGenerate(cPos, localTerrain.get()))
 				.map(cPos -> {
-					if (structureGenerator.generate(terrainGenerator, cPos, chunkRand)){
+					// You should regenerate a generator since you might actually have leftover fields (however the if should catch it)
+					// I will expose the reset() later on
+					Generator generator = factory.create(localTerrain.get().getVersion());
+					if (generator.generate(localTerrain.get(), cPos, chunkRand.get())) {
 						// get the count for this position of all the matching item predicate in all the chests
-						int count = ((ILoot) structure).getLoot(terrainGenerator.getWorldSeed(), structureGenerator, chunkRand, false)
+						int count = ((ILoot) localStructure.get()).getLoot(localTerrain.get().getWorldSeed(), generator, chunkRand.get(), false)
 								.stream().mapToInt(chestContent -> chestContent.getCount(itemPredicate)).sum();
+						if (count <= 0) {
+							return null;
+						}
 						return new Pair<>(cPos, count);
 					}
 					return null;
@@ -92,7 +100,6 @@ public class FindLoot {
 		int threads = parallelism == null || parallelism < 1 ? 1 : Math.min(parallelism, Runtime.getRuntime().availableProcessors());
 		ForkJoinPool forkJoinPool = new ForkJoinPool(threads);
 		return StreamEx.of(stream)
-
 				.limit(limit)
 				.map(Pair::getFirst)
 				.map(CPos::toBlockPos)
@@ -109,7 +116,7 @@ public class FindLoot {
 	 */
 	public static List<BPos> getNItemsPos(Stream<Pair<CPos, Integer>> stream, int limit, Integer parallelism) {
 		int threads = parallelism == null || parallelism < 1 ? 1 : Math.min(parallelism, Runtime.getRuntime().availableProcessors());
-		ForkJoinPool forkJoinPool = new ForkJoinPool(threads);
+		ForkJoinPool forkJoinPool = new ForkJoinPool(1);
 		AtomicInteger value = new AtomicInteger(0);
 		return StreamEx.of(stream)
 				.takeWhile(cPosIntegerPair -> value.addAndGet(cPosIntegerPair.getSecond()) < limit)
@@ -120,7 +127,7 @@ public class FindLoot {
 
 
 	public static void main(String[] args) {
-		final MCVersion version = MCVersion.v1_17;
+		final MCVersion version = MCVersion.v1_16;
 		final long worldSeed = 1L;
 		final Dimension dimension = Dimension.OVERWORLD;
 		final GenerationContext.Context context = GenerationContext.getContext(worldSeed, dimension, version);
@@ -137,6 +144,8 @@ public class FindLoot {
 		final int numberOfItemToFind = 5;
 		final int numberOfStructureToFind = 3;
 		final int parallelism = 1;
+		// [Pos{x=2624, y=0, z=2816}, Pos{x=1568, y=0, z=3072}, Pos{x=2240, y=0, z=3312}]
+		//[Pos{x=2624, y=0, z=2816}, Pos{x=1568, y=0, z=3072}, Pos{x=2240, y=0, z=3312}]
 		for (RegionStructure<?, ?> structure : structureToInclude) {
 			System.out.println(structure.getName());
 			Stream<Pair<CPos, Integer>> stream1 = streamLoot(originSearch, radiusSearch, terrainGenerator, structure, itemPredicate);
