@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'application'
 }
 
 group 'org.example'
@@ -15,6 +16,11 @@ repositories {
     }
 }
 
+
+application {
+    mainClass = 'com.seedfinding.neil.FindLoot'
+}
+
 dependencies {
     implementation("com.seedfinding:mc_math:LATEST")
     implementation("com.seedfinding:mc_seed:LATEST")
@@ -23,10 +29,10 @@ dependencies {
     implementation("com.seedfinding:mc_biome:LATEST")
     implementation("com.seedfinding:mc_feature:LATEST")
     implementation("com.seedfinding:mc_reversal:LATEST")
-    implementation('one.util:streamex:0.7.3')
+    implementation("one.util:streamex:0.8.1")
 
-    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.0'
-    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.7.0'
+    testImplementation("org.junit.jupiter:junit-jupiter-api:${jupiterVersion}")
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:${jupiterVersion}")
 }
 
 test {

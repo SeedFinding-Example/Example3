@@ -1,5 +1,6 @@
 package com.seedfinding.neil;
 
+import com.seedfinding.mcbiome.source.BiomeSource;
 import com.seedfinding.mccore.rand.ChunkRand;
 import com.seedfinding.mccore.state.Dimension;
 import com.seedfinding.mccore.util.data.Pair;
@@ -27,11 +28,16 @@ import java.util.Objects;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
+@SuppressWarnings("unchecked")
 public class FindLoot {
+	// FIXME: WARNING Replace RegionStructure with RegionStructure<?,?> in streamLoot when using it
+	// FIXME: I am allowing this here because of the check() function
+
 	/**
 	 * Return a stream of position for a specific item predicate withing a radius for a set of structure
 	 * Supports only 1.13+ (verified for 1.15+)
@@ -39,40 +45,43 @@ public class FindLoot {
 	 *
 	 * @param center           The center position to start the search from
 	 * @param radius           The radius in blocks to look for
-	 * @param terrainGenerator The terrain generator used for loot gathering
+	 * @param version 		   The version to generate the Generator
+	 * @param terrainGenerator The terrainGenerator supplier for terrain and biome
 	 * @param structure        The structure to look for
 	 * @param itemPredicate    the item predicate to look for (could match multiple one then)
 	 * @return a stream of pair Position, number of item matching the predicate
 	 */
-	public static Stream<Pair<CPos, Integer>> streamLoot(BPos center, int radius, TerrainGenerator terrainGenerator, RegionStructure<?, ?> structure, Predicate<Item> itemPredicate) {
-
-
-		Generator.GeneratorFactory<?> factory = Generators.get(structure.getClass());
+	public static Stream<Pair<CPos, Integer>> streamLoot(BPos center, int radius,MCVersion version, Supplier<TerrainGenerator> terrainGenerator, Supplier<RegionStructure> structure, Predicate<Item> itemPredicate) {
+		// check that this generator can provide the desired loot
+		Generator.GeneratorFactory<?> factory = Generators.get(structure.get().getClass());
 		if (factory == null) {
 			return Stream.empty();
 		}
-		Generator structureGenerator = factory.create(terrainGenerator.getVersion());
+		Generator structureGenerator = factory.create(version);
 		if (structureGenerator.getPossibleLootItems().stream().noneMatch(itemPredicate)) {
 			return Stream.empty();
 		}
-		int chunkInRegion = structure.getSpacing();
+
+		int chunkInRegion = structure.get().getSpacing();
 		int regionSize = chunkInRegion * 16;
 		SpiralIterator<RPos> spiralIterator = new SpiralIterator<>(
 				new RPos(center.toRegionPos(regionSize).getX(), center.toRegionPos(regionSize).getZ(), regionSize),
 				new RPos(radius / regionSize, radius / regionSize, regionSize), 1, (x, y, z) -> new RPos(x, z, regionSize)
 		);
 		ThreadLocal<ChunkRand> chunkRand = ThreadLocal.withInitial(ChunkRand::new);
-		ThreadLocal<RegionStructure<?,?>> localStructure = ThreadLocal.withInitial(()->structure);
-		ThreadLocal<TerrainGenerator> localTerrain = ThreadLocal.withInitial(()->terrainGenerator);
+		ThreadLocal<RegionStructure> localStructure = ThreadLocal.withInitial(structure);
+		ThreadLocal<TerrainGenerator> localTerrain = ThreadLocal.withInitial(terrainGenerator);
+		ThreadLocal<Generator.GeneratorFactory<?>> localFactory = ThreadLocal.withInitial(() -> factory);
 		// this will be by thread and thus be "thread safe"
-		return StreamSupport.stream(spiralIterator.spliterator(), false)
+		return StreamSupport.stream(spiralIterator.spliterator(), true)
 				.map(rPos -> localStructure.get().getInRegion(localTerrain.get().getWorldSeed(), rPos.getX(), rPos.getZ(), chunkRand.get()))
 				.filter(Objects::nonNull)
-				.filter(cPos -> localStructure.get().canSpawn(cPos, localTerrain.get().getBiomeSource()) && localStructure.get().canGenerate(cPos, localTerrain.get()))
+				.filter(cPos->localStructure.get().canSpawn(cPos, localTerrain.get().getBiomeSource()))
+				.filter(cPos->localStructure.get().canGenerate(cPos, localTerrain.get()))
 				.map(cPos -> {
 					// You should regenerate a generator since you might actually have leftover fields (however the if should catch it)
 					// I will expose the reset() later on
-					Generator generator = factory.create(localTerrain.get().getVersion());
+					Generator generator = localFactory.get().create(localTerrain.get().getVersion());
 					if (generator.generate(localTerrain.get(), cPos, chunkRand.get())) {
 						// get the count for this position of all the matching item predicate in all the chests
 						int count = ((ILoot) localStructure.get()).getLoot(localTerrain.get().getWorldSeed(), generator, chunkRand.get(), false)
@@ -100,6 +109,7 @@ public class FindLoot {
 		int threads = parallelism == null || parallelism < 1 ? 1 : Math.min(parallelism, Runtime.getRuntime().availableProcessors());
 		ForkJoinPool forkJoinPool = new ForkJoinPool(threads);
 		return StreamEx.of(stream)
+				.parallel(forkJoinPool)
 				.limit(limit)
 				.map(Pair::getFirst)
 				.map(CPos::toBlockPos)
@@ -116,9 +126,11 @@ public class FindLoot {
 	 */
 	public static List<BPos> getNItemsPos(Stream<Pair<CPos, Integer>> stream, int limit, Integer parallelism) {
 		int threads = parallelism == null || parallelism < 1 ? 1 : Math.min(parallelism, Runtime.getRuntime().availableProcessors());
-		ForkJoinPool forkJoinPool = new ForkJoinPool(1);
+		ForkJoinPool forkJoinPool = new ForkJoinPool(threads);
 		AtomicInteger value = new AtomicInteger(0);
 		return StreamEx.of(stream)
+				.parallel(forkJoinPool)
+				.unordered()
 				.takeWhile(cPosIntegerPair -> value.addAndGet(cPosIntegerPair.getSecond()) < limit)
 				.map(Pair::getFirst)
 				.map(CPos::toBlockPos)
@@ -130,35 +142,53 @@ public class FindLoot {
 		final MCVersion version = MCVersion.v1_16;
 		final long worldSeed = 1L;
 		final Dimension dimension = Dimension.OVERWORLD;
-		final GenerationContext.Context context = GenerationContext.getContext(worldSeed, dimension, version);
-		final TerrainGenerator terrainGenerator = context.getGenerator();
+		final Supplier<TerrainGenerator> terrainGeneratorSupplier = ()-> TerrainGenerator.of(BiomeSource.of(dimension,version,worldSeed));
+
 		final BPos originSearch = BPos.ORIGIN;
-		final int radiusSearch = 300000;
-		final HashSet<RegionStructure<?, ?>> structureToInclude = new HashSet<RegionStructure<?, ?>>() {{
-			add(new DesertPyramid(version));
-			add(new BuriedTreasure(version));
-			add(new Shipwreck(version));
+		final int radiusSearch = 10000;
+		// please use RegionStructure<?,?>
+		final HashSet<Supplier<RegionStructure>> structureToInclude = new HashSet<>() {{
+			add(() -> new DesertPyramid(version));
+			add(() -> new BuriedTreasure(version));
+			add(() -> new Shipwreck(version));
 		}};
 		// Notch + normal gold apple
 		final Predicate<Item> itemPredicate = item -> item.equalsName(Items.ENCHANTED_GOLDEN_APPLE) || item.equalsName(Items.GOLDEN_APPLE);
-		final int numberOfItemToFind = 5;
-		final int numberOfStructureToFind = 3;
-		final int parallelism = 1;
-		// [Pos{x=2624, y=0, z=2816}, Pos{x=1568, y=0, z=3072}, Pos{x=2240, y=0, z=3312}]
-		//[Pos{x=2624, y=0, z=2816}, Pos{x=1568, y=0, z=3072}, Pos{x=2240, y=0, z=3312}]
-		for (RegionStructure<?, ?> structure : structureToInclude) {
-			System.out.println(structure.getName());
-			Stream<Pair<CPos, Integer>> stream1 = streamLoot(originSearch, radiusSearch, terrainGenerator, structure, itemPredicate);
+		final int numberOfItemToFind = 50;
+		final int numberOfStructureToFind = 300;
+		final int parallelism = 5;
+		for (Supplier<RegionStructure> structure : structureToInclude) {
+			System.out.println(structure.get().getName());
+			Stream<Pair<CPos, Integer>> stream1 = streamLoot(originSearch, radiusSearch,version, terrainGeneratorSupplier, structure, itemPredicate);
 			// Find X structure Pos such as in those all X if we sum the items we get numberOfItemToFind
 			List<BPos> NItemsPos = getNItemsPos(stream1, numberOfItemToFind, parallelism);
-			System.out.println(NItemsPos);
+			NItemsPos.stream().filter(x -> check(x, dimension, worldSeed, version, structure, itemPredicate)).forEach(x -> System.out.println(x.getX() + " " + x.getZ()));
+
+			System.out.println();
 
 			// WARNING you can not reuse a stream !
-
-			Stream<Pair<CPos, Integer>> stream2 = streamLoot(originSearch, radiusSearch, terrainGenerator, structure, itemPredicate);
+			Stream<Pair<CPos, Integer>> stream2 = streamLoot(originSearch, radiusSearch,version, terrainGeneratorSupplier, structure, itemPredicate);
 			// Find N structure which satisfies the item predicate (with N=numberOfStructureToFind)
 			List<BPos> NClosestPos = getNClosestLootPos(stream2, numberOfStructureToFind, parallelism);
-			System.out.println(NClosestPos);
+			NClosestPos.forEach(x -> System.out.println(x.getX() + " " + x.getZ()));
 		}
+	}
+
+	private static boolean check(BPos pos, Dimension dimension, long worldSeed, MCVersion version, Supplier<RegionStructure> structure, Predicate<Item> itemPredicate) {
+		CPos cPos = pos.toChunkPos();
+		TerrainGenerator terrainGenerator1 = TerrainGenerator.of(BiomeSource.of(dimension, version, worldSeed));
+		RegionStructure.Data<?> data = structure.get().at(cPos.getX(), cPos.getZ());
+		boolean canStart=structure.get().canStart(data, terrainGenerator1.getWorldSeed(), new ChunkRand());
+		boolean canSpawn=structure.get().canSpawn(cPos, terrainGenerator1.getBiomeSource());
+		boolean canGenerate=structure.get().canGenerate(cPos, terrainGenerator1);
+		Generator generator = Generators.get(structure.get().getClass()).create(terrainGenerator1.getVersion());
+		boolean generate = generator.generate(terrainGenerator1, cPos);
+		int count = ((ILoot) (structure.get())).getLoot(terrainGenerator1.getWorldSeed(), generator, false)
+				.stream().mapToInt(chestContent -> chestContent.getCount(itemPredicate)).sum();
+		if (canStart && canSpawn && canGenerate && generate && count>0 ){
+			return true;
+		}
+		System.err.println("Failed at "+cPos+" "+canStart+" "+canSpawn+ " "+canGenerate+" "+generate);
+		return false;
 	}
 }
