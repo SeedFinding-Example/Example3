@@ -5,6 +5,7 @@ import com.seedfinding.mccore.rand.ChunkRand;
 import com.seedfinding.mccore.state.Dimension;
 import com.seedfinding.mccore.util.data.Pair;
 import com.seedfinding.mccore.util.data.SpiralIterator;
+import com.seedfinding.mccore.util.data.Triplet;
 import com.seedfinding.mccore.util.math.DistanceMetric;
 import com.seedfinding.mccore.util.pos.BPos;
 import com.seedfinding.mccore.util.pos.CPos;
@@ -107,14 +108,13 @@ public class FindLoot {
 	 * @param parallelism the number of threads to use (defaults to 1 if null)
 	 * @return a lit of the N closest
 	 */
-	public static List<BPos> getNClosestLootPos(Stream<Pair<CPos, Integer>> stream, int limit, Integer parallelism) {
+	public static List<Pair<BPos,String>> getNClosestLootPos(Stream<Triplet<CPos, Integer,Supplier<RegionStructure>>> stream, int limit, Integer parallelism) {
 		int threads = parallelism == null || parallelism < 1 ? 1 : Math.min(parallelism, Runtime.getRuntime().availableProcessors());
 		ForkJoinPool forkJoinPool = new ForkJoinPool(threads);
 		return StreamEx.of(stream)
 				.parallel(forkJoinPool)
 				.limit(limit)
-				.map(Pair::getFirst)
-				.map(CPos::toBlockPos)
+				.map(x->new Pair<>(x.getFirst().toBlockPos(),x.getThird().get().getName()))
 				.collect(Collectors.toList());
 	}
 
@@ -126,7 +126,7 @@ public class FindLoot {
 	 * @param parallelism the number of threads to use (defaults to 1 if null)
 	 * @return a lit of the N closest
 	 */
-	public static List<BPos> getNItemsPos(Stream<Pair<CPos, Integer>> stream, int limit, Integer parallelism) {
+	public static List<Pair<BPos,String>> getNItemsPos(Stream<Triplet<CPos, Integer,Supplier<RegionStructure>>> stream, int limit, Integer parallelism) {
 		int threads = parallelism == null || parallelism < 1 ? 1 : Math.min(parallelism, Runtime.getRuntime().availableProcessors());
 		ForkJoinPool forkJoinPool = new ForkJoinPool(threads);
 		AtomicInteger value = new AtomicInteger(0);
@@ -134,8 +134,7 @@ public class FindLoot {
 				.parallel(forkJoinPool)
 				.unordered()
 				.takeWhile(cPosIntegerPair -> value.addAndGet(cPosIntegerPair.getSecond()) < limit)
-				.map(Pair::getFirst)
-				.map(CPos::toBlockPos)
+				.map(x->new Pair<>(x.getFirst().toBlockPos(),x.getThird().get().getName()))
 				.collect(Collectors.toList());
 	}
 
@@ -154,28 +153,26 @@ public class FindLoot {
 			add(() -> new BuriedTreasure(version));
 			add(() -> new Shipwreck(version));
 		}};
-		// Notch + normal gold apple
-		final Predicate<Item> itemPredicate = item -> item.equalsName(Items.ENCHANTED_GOLDEN_APPLE) || item.equalsName(Items.GOLDEN_APPLE);
+		final Predicate<Item> itemPredicate = item -> item.equalsName(Items.IRON_INGOT);
 		final int numberOfItemToFind = 50;
 		final int numberOfStructureToFind = 30;
 		final int parallelism = 5;
 
-		Stream<Pair<CPos, Integer>> mergedStream1 = mergeStreams(structureToInclude, originSearch, structure -> streamLoot(originSearch, radiusSearch, version, terrainGeneratorSupplier, structure, itemPredicate));
-		List<BPos> list1 = getNClosestLootPos(mergedStream1, numberOfStructureToFind, parallelism);
+		Stream<Triplet<CPos, Integer,Supplier<RegionStructure>>> mergedStream1 = mergeStreams(structureToInclude, originSearch, structure -> streamLoot(originSearch, radiusSearch, version, terrainGeneratorSupplier, structure, itemPredicate));
+		List<Pair<BPos,String>> list1 = getNClosestLootPos(mergedStream1, numberOfStructureToFind, parallelism);
 		System.out.println(list1);
 
-		Stream<Pair<CPos, Integer>> mergedStream2 = mergeStreams(structureToInclude, originSearch, structure -> streamLoot(originSearch, radiusSearch, version, terrainGeneratorSupplier, structure, itemPredicate));
-		List<BPos> list2 = getNItemsPos(mergedStream2, numberOfItemToFind, parallelism);
+		Stream<Triplet<CPos, Integer,Supplier<RegionStructure>>> mergedStream2 = mergeStreams(structureToInclude, originSearch, structure -> streamLoot(originSearch, radiusSearch, version, terrainGeneratorSupplier, structure, itemPredicate));
+		List<Pair<BPos,String>> list2 = getNItemsPos(mergedStream2, numberOfItemToFind, parallelism);
 		System.out.println(list2);
 	}
 
-	private static Stream<Pair<CPos, Integer>> mergeStreams(HashSet<Supplier<RegionStructure>> structureToInclude, BPos originSearch, Function<Supplier<RegionStructure>, Stream<Pair<CPos, Integer>>> fn) {
-		Stream<Pair<CPos, Integer>> stream = Stream.empty();
+	private static Stream<Triplet<CPos, Integer,Supplier<RegionStructure>>> mergeStreams(HashSet<Supplier<RegionStructure>> structureToInclude, BPos originSearch, Function<Supplier<RegionStructure>, Stream<Pair<CPos, Integer>>> fn) {
+		Stream<Triplet<CPos, Integer,Supplier<RegionStructure>>> stream = Stream.empty();
 		for (Supplier<RegionStructure> structure : structureToInclude) {
-			stream = Stream.concat(stream, fn.apply(structure));
+			stream = Stream.concat(stream, fn.apply(structure).map(x-> new Triplet<>(x.getFirst(),x.getSecond(),structure)));
 		}
-		Stream<Pair<CPos, Integer>> mergedStream = stream.sorted(Comparator.comparing(a -> originSearch.distanceTo(a.getFirst().toBlockPos(), DistanceMetric.EUCLIDEAN_SQ)));
-
+		return stream.sorted(Comparator.comparing(a -> originSearch.distanceTo(a.getFirst().toBlockPos(), DistanceMetric.EUCLIDEAN_SQ)));
 	}
 
 	private static boolean check(BPos pos, Dimension dimension, long worldSeed, MCVersion version, Supplier<RegionStructure> structure, Predicate<Item> itemPredicate) {
